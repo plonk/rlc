@@ -1,12 +1,6 @@
 # -*- coding: utf-8 -*-
 require_relative 'util.rb'
 
-class String
-  # def inspect
-  #   to_s
-  # end
-end
-
 class Object
   def apply(*more_args, &f)
     f.call(self, *more_args)
@@ -32,40 +26,59 @@ class Array
   end
 end
 
+class Symbol
+  def [] obj
+    obj.method self
+  end
+end
+
 $MACROS = {}
 
 module RubyLisp
   def RubyLisp.builtin_stuff
     <<EOF
-(defmacro unless (condition &rest body)
-  (.list (quote if) condition
-     (quote nil)
-     (+ (.list (quote progn)) body)))
+;(defmacro unless (condition &rest body)
+;  (.list (quote if) condition
+;     (quote nil)
+;     (+ (.list (quote progn)) body)))
 
-(defmacro when (condition &rest body)
-  (.list (quote if) condition
-           (+ (.list (quote progn)) body)
-           (quote nil)))
-
-(defmacro rotatef (a b)
-  (.list (quote progn)
-           (.list (quote setq) (quote tmp) a)
-           (.list (quote setq) a b)
-           (.list (quote setq) b (quote tmp))
-           (quote nil)))
+;(defmacro when (condition &rest body)
+;  (.list (quote if) condition
+;           (+ (.list (quote progn)) body)
+;           (quote nil)))
 
 (def list (&rest items)
   items)
+
+(defmacro function (name) (.list 'to_proc (.list 'quote name)))
+
+(defmacro let (varlist &rest body)
+   (.list 'apply (+ '(.list) (map varlist & #'last))
+      '& (+ (.list 'lambda (.list (map varlist & #'first))) body)))
+
+(apply 0 & (lambda (counter)
+             (.define_method 'gensym &(lambda ()
+                                        (to_sym
+                                         (% "g_%05x"
+                                            (setq counter (+ counter 1))))))))
+
+(defmacro rotatef (a b)
+  (setq tmp (.gensym))
+  (.list 'let (.list (.list tmp a))
+           (.list 'setq a b)
+           (.list 'setq b tmp)
+           'nil))
 EOF
   end
 
   def RubyLisp.lisp_eval(str, env)
-    read_from_string(str)
-      .map {|sexp| macroexpand(sexp) }
-      .apply(&method(:compile))
-      .apply { |ruby_code|
-      eval(ruby_code, env)
-    }
+    until str.empty?
+      sexp, str = read(str)
+      p sexp
+      ruby_code = compile_sexp macroexpand sexp
+      p ruby_code
+      eval ruby_code, env
+    end
   end
 
   # Read Eval Print Loop
@@ -76,19 +89,24 @@ EOF
     lisp_eval(builtin_stuff, env)
     while line = Readline.readline("> ", true)
       begin
-        list_of_sexps = read_from_string(line)
-        list_of_sexps = list_of_sexps.map {|sexp| macroexpand(sexp) }
-        ruby_code = compile(list_of_sexps)
+        until line.empty?
+          sexp, line = read(line)
 
-        # puts ruby_code
+          puts "read:\n\t#{sexp.inspect}"
 
-        result = eval(ruby_code, env)
+          
+          ruby_code = compile_sexp sexp.apply &:macroexpand[RubyLisp]
 
-        # puts
-        p result
+          puts "ruby code:\n\t#{ruby_code}"
+
+          result = eval(ruby_code, env)
+
+          puts
+          p result
+        end
       rescue StandardError => e
-        raise
-        p e
+        puts $!
+        puts $@
       end
     end
   end
@@ -104,7 +122,13 @@ EOF
     if (i = ls.index(:"&rest")) != nil
       ls.delete(:"&rest")
     end
-    result = ls.map(&:to_s)
+    result = ls.map do |item|
+      if item.is_a? Array
+        "(#{compile_lambda_list(item)})"
+      else
+        item.to_s
+      end
+    end
     if i
       result[i] = "*" + result[i]
     end
@@ -163,7 +187,7 @@ EOF
         #
         # 直後の引数がブロック引数であって、通常と異なる経路で渡さなけ
         # ればならないことを指示する & シンボルがあれば、そのようにする。
-        if sexp[0].to_s =~ /^global-/
+        if sexp[0].to_s =~ /^\./
           if sexp.include?(:&)
             raise "too many &'s" if sexp.count(:&) > 1
             raise "& found but not argument" if sexp.index(:&) == sexp.size-1
@@ -171,11 +195,11 @@ EOF
             func = sexp[posamp+1]
             sexp = sexp.values_at(*(0..sexp.size-1).to_a - [posamp, posamp+1])
             msg, *args = sexp
-            msg.to_s.sub(/^global-/,'') + arglist(args.map(&method(:compile_sexp)) + ["&"+compile_sexp(func)])
+            msg.to_s.sub(/^\./,'') + arglist(args.map(&method(:compile_sexp)) + ["&"+compile_sexp(func)])
           else
             msg, *args = sexp
 
-            msg.to_s.sub(/^global-/,'') + arglist(args.map(&method(:compile_sexp)))
+            msg.to_s.sub(/^\./,'') + arglist(args.map(&method(:compile_sexp)))
           end
         else
           if sexp.include?(:&)
@@ -223,7 +247,7 @@ EOF
   end
 
   def RubyLisp.macroexpand(sexp)
-    if not sexp.is_a? Array
+    if not sexp.is_a? Array # if atom
       sexp
     elsif sexp.empty?
       []
@@ -231,8 +255,8 @@ EOF
     #   when_macro *sexp[1..-1]
     elsif $MACROS.has_key?(sexp[0])
       macro = $MACROS[sexp[0]]
-      # p "calling macro #{macro} with #{sexp[1..-1].inspect}"
-      macro.call(*sexp[1..-1])
+      p "calling macro #{macro} with #{sexp[1..-1].inspect}"
+      RubyLisp.macroexpand macro.call(*sexp[1..-1])
     else
       [sexp[0]] + sexp[1..-1].map( &method(:macroexpand))
     end
@@ -246,78 +270,61 @@ EOF
     {value: nil, type: str.to_sym}
   end
 
-  def RubyLisp.read_from_string(str)
-    toklist = tokenize(str.as String)
-    code_as_data = parse(toklist)
-  end
-
-  def RubyLisp.tokenize string
-    output = []
-    loop do
-      res = token(string)
-      break if res == nil
-      tok, string = res
-#      STDERR.print "DEBUG: READ TOKEN: #{tok.inspect}\n"
-      output << tok
+  class CloseParenException < StandardError
+    attr_reader :rest
+    def initialize(rest)
+      @rest = rest
     end
-    # puts 
-    output
   end
 
-  def RubyLisp.token input
-    case input 
-    when ""
-      nil
+  ORDINARY_CHARS = ((32..126).map(&:chr) -
+                    [" ", ?#, ?(, ?), ?', ?", ?;] -
+                    # ['.'] -
+                    [*'0'..'9']).join
+
+  # String -> [Object, String]
+  def RubyLisp.read input
+    case input.strip
+    when ''
+      raise 'null input'
+    when /\A;[^\n]+\n/
+      read $'
     when /\A\s+/
-      token $'
-    when /\A[()]/
-      [symtok($&), $']
-    when /\A&[a-zA-Z]+/
-      [{value: $&, type: :symbol}, $']
-    when /\A#'([@\$]?[a-z_][a-zA-Z_]*[?!]?)/
-      [{value: $1.to_sym, type: :generic_function}, $']
-    when /\A[%+\-*\/&=]+/
-      [{value: $&, type: :symbol}, $']
-    when /\A\.([A-Za-z_][a-zA-Z_]*[?!]?)/
-      [{value: "global-" + $1, type: :symbol}, $']
-    when /\A[@\$]?[A-Za-z_][a-zA-Z_]*[?!]?/
-      [{value: $&, type: :symbol}, $']
-    when /\A[0-9]+/
-      [{value: $&.to_i, type: :number}, $']
-    when /\A"[^"]*"/
-      [{value: eval($&), type: :string}, $']
-    else
-      raise "scan error #{input.inspect}"
-    end
-  end
-
-
-  def RubyLisp.parse_sexp tokens
-    if tokens[0][:type] == :"("
-      list = []
-      tokens.shift
-      until tokens[0][:type] == :")"
-        sexp, tokens = parse_sexp tokens
-        list << sexp
+      read $'
+    when /\A\)/
+      raise CloseParenException.new($')
+    when /\A\(/
+      begin
+        str = $'
+        result = []
+        loop do
+          sexp, str = read(str)
+          result << sexp
+        end
+      rescue CloseParenException => e
+        return [result, e.rest]
       end
-      tokens.shift
-      return [list, tokens]
-    else
-      atom = tokens.shift
-      result = nil
-      case atom[:type]
-      when :symbol
-        result = atom[:value].to_sym
-      when :string
-        result = atom[:value]
-      when :number
-        result = atom[:value]
-      when :generic_function
-        result = [:to_proc, [:quote, atom[:value].to_sym]]
+      raise 'unreachable'
+    when /\A[#{Regexp.escape ORDINARY_CHARS}]+/
+      [$&.to_sym, $']
+    when /\A\d+/
+      [$&.to_i, $']
+    when /\A'/
+      sexp, rest = read($')
+      [[:quote, sexp], rest]
+    when /\A"/
+      rest = $'
+      if ( match = rest.match(/\A[^"]*"/) ) != nil
+        str = match.to_s[0..-2]
       else
-        raise "unkonwn atom type"
+        raise 'could not find balancing double quote'
       end
-      return [result, tokens]
+      [str, $']
+    when /\A#'/
+      sexp, rest = read($')
+      [[:function, sexp], rest]
+    else
+      raise "parse error #{input.inspect}"
     end
   end
 

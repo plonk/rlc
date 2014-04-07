@@ -2,4 +2,9 @@
 
 require_relative 'read.rb'
 
-puts RubyLisp.compile(RubyLisp.read_from_string(File.read("fizz.lisp")))
+str = File.read(ARGV[0])
+until str.empty?
+  sexp, str = RubyLisp.read(str)
+  puts RubyLisp.compile_sexp(sexp)
+end
+  
