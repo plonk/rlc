@@ -1,6 +1,17 @@
 # -*- coding: utf-8 -*-
 require_relative 'util.rb'
 
+class String
+  # Terminate Print Line
+  def terpri
+    if self =~ /\n\z/
+      self
+    else
+      self + "\n"
+    end
+  end
+end
+
 class Object
   def apply(*more_args, &f)
     f.call(self, *more_args)
@@ -35,48 +46,21 @@ end
 $MACROS = {}
 
 module RubyLisp
+  MACRO_CHARS = {}
+
   def RubyLisp.builtin_stuff
-    <<EOF
-;(defmacro unless (condition &rest body)
-;  (.list (quote if) condition
-;     (quote nil)
-;     (+ (.list (quote progn)) body)))
-
-;(defmacro when (condition &rest body)
-;  (.list (quote if) condition
-;           (+ (.list (quote progn)) body)
-;           (quote nil)))
-
-(def list (&rest items)
-  items)
-
-(defmacro function (name) (.list 'to_proc (.list 'quote name)))
-
-(defmacro let (varlist &rest body)
-   (.list 'apply (+ '(.list) (map varlist & #'last))
-      '& (+ (.list 'lambda (.list (map varlist & #'first))) body)))
-
-(apply 0 & (lambda (counter)
-             (.define_method 'gensym &(lambda ()
-                                        (to_sym
-                                         (% "g_%05x"
-                                            (setq counter (+ counter 1))))))))
-
-(defmacro rotatef (a b)
-  (setq tmp (.gensym))
-  (.list 'let (.list (.list tmp a))
-           (.list 'setq a b)
-           (.list 'setq b tmp)
-           'nil))
-EOF
+    path = File.dirname(__FILE__) + "/builtin.lisp"
+    File.read(path)
   end
 
   def RubyLisp.lisp_eval(str, env)
-    until str.empty?
+    until str =~ /\A\s*\z/
       sexp, str = read(str)
+      puts "read:"
       p sexp
       ruby_code = compile_sexp macroexpand sexp
-      p ruby_code
+      puts "ruby:"
+      puts ruby_code
       eval ruby_code, env
     end
   end
@@ -85,11 +69,12 @@ EOF
   def RubyLisp.repl()
     require 'readline'
 
+    load_history
     env = TOPLEVEL_BINDING
     lisp_eval(builtin_stuff, env)
     while line = Readline.readline("> ", true)
       begin
-        until line.empty?
+        until line =~ /\A\s*\z/
           sexp, line = read(line)
 
           puts "read:\n\t#{sexp.inspect}"
@@ -104,10 +89,44 @@ EOF
           puts
           p result
         end
+      rescue PrematureSexpEnd => e
+        cont = Readline.readline(">> ", true)
+        if cont
+          line += " " + cont
+          retry
+        else
+          puts "\nCancelled.\n"
+        end
       rescue StandardError => e
         puts $!
         puts $@
       end
+    end
+  ensure
+    save_history
+  end
+
+  HISTORY_FILE = ENV['HOME'] + "/.lor_history"
+  HISTORY_LINES = 3000
+
+  def RubyLisp.load_history
+    File.open(HISTORY_FILE, "r") do |his|
+      his.read.each_line.each do |line|
+        Readline::HISTORY << line.chomp
+      end
+    end
+  rescue StandardError => e
+    STDERR.puts "Could not load #{HISTORY_FILE}. #{e}"
+  end
+
+  def  RubyLisp.save_history
+    File.open(HISTORY_FILE, "w") do |his|
+      Readline::HISTORY.to_a
+        .reverse.uniq.reverse	# 新しい項目を残して重複削除
+        .reject(&:empty?)	# 空行削除
+        .take(HISTORY_LINES)
+        .map(&:terpri).join
+        .apply(&his.method(:print))
     end
   end
 
@@ -159,6 +178,8 @@ EOF
     if sexp.is_a? Array
       if sexp[0] == :quote
         sexp[1].inspect
+      elsif sexp[0] == :private_function
+        "method(#{sexp[1].inspect})"
       elsif sexp[0] == :setq 
         var = compile_sexp(sexp[1])
         val = compile_sexp(sexp[2])
@@ -255,7 +276,7 @@ EOF
     #   when_macro *sexp[1..-1]
     elsif $MACROS.has_key?(sexp[0])
       macro = $MACROS[sexp[0]]
-      p "calling macro #{macro} with #{sexp[1..-1].inspect}"
+      # p "calling macro #{macro} with #{sexp[1..-1].inspect}"
       RubyLisp.macroexpand macro.call(*sexp[1..-1])
     else
       [sexp[0]] + sexp[1..-1].map( &method(:macroexpand))
@@ -282,11 +303,31 @@ EOF
                     # ['.'] -
                     [*'0'..'9']).join
 
+  class PrematureSexpEnd < StandardError
+  end
+
   # String -> [Object, String]
   def RubyLisp.read input
-    case input.strip
+    unless MACRO_CHARS.empty?
+      if input =~ /\A([#{Regexp.escape(MACRO_CHARS.keys.join)}])/
+        if MACRO_CHARS[$1].is_a? Proc
+          return MACRO_CHARS[$1].call($', $1)
+        elsif MACRO_CHARS[$1].is_a? Hash
+          ftable = MACRO_CHARS[$1]
+          if fn = ftable[$'[0]]
+            return fn.call($'[1..-1], $1, $'[0])
+          else
+            raise "no dispatch macro for #{$1} #{$'[0]}"
+          end
+        else
+          raise "something wrong"
+        end
+      end
+    end
+
+    case input
     when ''
-      raise 'null input'
+      raise PrematureSexpEnd, 'null input'
     when /\A;[^\n]+\n/
       read $'
     when /\A\s+/
@@ -309,9 +350,6 @@ EOF
       [$&.to_sym, $']
     when /\A\d+/
       [$&.to_i, $']
-    when /\A'/
-      sexp, rest = read($')
-      [[:quote, sexp], rest]
     when /\A"/
       rest = $'
       if ( match = rest.match(/\A[^"]*"/) ) != nil
@@ -320,9 +358,6 @@ EOF
         raise 'could not find balancing double quote'
       end
       [str, $']
-    when /\A#'/
-      sexp, rest = read($')
-      [[:function, sexp], rest]
     else
       raise "parse error #{input.inspect}"
     end
@@ -337,5 +372,16 @@ EOF
     end
     output
   end
+
+  def RubyLisp.set_macro_character char, fn
+    MACRO_CHARS[char] = fn
+  end
+
+  def RubyLisp.set_dispatch_macro_character char1, char2, fn
+    MACRO_CHARS[char1] ||= char1
+    MACRO_CHARS[char1][char2] = fn
+  end
+
+  MACRO_CHARS['#'] = {}
 end  
   
