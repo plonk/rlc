@@ -48,3 +48,6 @@
          (.list 'setq a b)
          (.list 'setq b tmp)
          'nil))
+
+(defmacro incf (place)
+  (.list 'setq place (.list '+ place 1)))
