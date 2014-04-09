@@ -202,6 +202,24 @@ module RubyLisp
         compile_def(*sexp[1..-1])
       elsif sexp[0] == :defmacro
         compile_defmacro(*sexp[1..-1])
+      elsif sexp[0] == :"while"
+        condition = compile_sexp(sexp[1])
+        body = sexp[2..-1].map(&RubyLisp.method(:compile_sexp)).join("; ")
+        "while #{condition} do #{body} end"
+      elsif sexp[0] == :"return"
+        _, value = sexp
+        if b
+          "return #{ compile_sexp(value) }"
+        else
+          "return"
+        end
+      elsif sexp[0] == :"break"
+        _, value = sexp
+        if value
+          "break #{ compile_sexp(value) }"
+        else
+          "break"
+        end
       else
         # この段階で sexp は [:msg, :receiver, :arg1, :arg2, ...] のよ
         # うになっている。
