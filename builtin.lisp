@@ -1,25 +1,25 @@
 (def list (&rest items)
   items)
 
-(set_macro_character RubyLisp
+(set_macro_character LR
                      "'"
                      (lambda (input char)
-                       (setq res (read RubyLisp input))
+                       (setq res (read LR input))
                        (.list (.list (quote quote) (first res)) (last res))))
 
-(set_dispatch_macro_character RubyLisp "#" "'"
+(set_dispatch_macro_character LR "#" "'"
                               (lambda (input char_a char_b)
-                                (setq res (read RubyLisp input))
+                                (setq res (read LR input))
                                 (.list (.list 'function (first res)) (last res))))
 
-(set_dispatch_macro_character RubyLisp "#" (chr 92) ; バックスラッシュ
+(set_dispatch_macro_character LR "#" (chr 92) ; バックスラッシュ
                               (lambda (input char_a char_b)
                                 (.list (slice input 0)
                                        (slice input 1 (- (length input) 1)))))
 
-(set_dispatch_macro_character RubyLisp #\# #\"
+(set_dispatch_macro_character LR #\# #\"
                               (lambda (input char_a char_b)
-                                (setq res (read RubyLisp input))
+                                (setq res (read LR input))
                                 (.list (.list 'private_function (first res)) (last res))))
 
 (defmacro function (name) (.list 'to_proc (.list 'quote name)))
@@ -51,3 +51,10 @@
 
 (defmacro incf (place)
   (.list 'setq place (.list '+ place 1)))
+
+(defmacro cond (&rest cases)
+  (if (empty? cases)
+      'nil
+      (.list 'if (first (first cases))
+             (+ (.list 'progn)  (rest (first cases)))
+             (+ '(cond) (rest cases)))))
