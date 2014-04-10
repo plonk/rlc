@@ -3,14 +3,11 @@
       nil
       (progn
         (setq p (.list (== (% i 3) 0) (== (% i 5) 0)))
-        (if (== p (.list true true))
-            (.puts "fizzbuzz")
-            (if (== p (.list true false))
-                (.puts "fizz")
-                (if (== p (.list false true))
-                    (.puts "buzz")
-                    (if (== p (.list false false))
-                        (.puts i)))))
+        (cond
+          ((== p (.list true true)) (.puts "fizzbuzz"))
+          ((== p (.list true false)) (.puts "fizz"))
+          ((== p (.list false true)) (.puts "buzz"))
+          ((== p (.list false false)) (.puts i)))
         (.fizz (+ i 1)))))
 
 (.fizz 1)
