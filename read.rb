@@ -7,9 +7,23 @@ $MACROS = {}
 module LR
   MACRO_CHARS = {}
 
-  def LR.builtin_stuff
-    path = File.dirname(__FILE__) + "/builtin.lisp"
-    File.read(path)
+  BUILTIN_STUFF = File.dirname(__FILE__) + "/builtin.lisp"
+
+  def LR.read_body(str)
+    values = []
+    loop do
+      begin
+        sexp, str = read(str)
+      rescue NullInputException
+        if values.nonempty?
+          return values
+        else
+          raise
+        end
+      end
+      values << macroexpand(sexp)
+    end
+    values
   end
 
   def LR.lisp_eval(str, env)
@@ -34,18 +48,36 @@ module LR
     values.last
   end
 
+  def LR.load pathname
+    begin
+      src = File.read(pathname)
+      lisp_eval(src.gsub(/\n/m, ' ').strip, TOPLEVEL_BINDING)
+    rescue PrematureEndException => e
+      raise
+    end
+  end
+
+  def LR.load_builtin
+    str = File.read( BUILTIN_STUFF ).strip
+    while str.nonempty?
+      sexp, str = LR.read(str)
+      sexp = macroexpand sexp
+      eval(compile_sexp(sexp), TOPLEVEL_BINDING)
+    end
+  end
+
   # Read Eval Print Loop
   def LR.repl()
     require 'readline'
 
     load_history
     env = TOPLEVEL_BINDING
-    lisp_eval(builtin_stuff, env)
+    LR.load_builtin
     while line = Readline.readline("> ", true)
       begin
         p lisp_eval(line + "\n", env)
       rescue PrematureEndException => e
-        cont = Readline.readline("[#{e.message}] >> ", true)
+        cont = Readline.readline("#{e.message}> ", true)
         if cont
           line += "\n" + cont
           retry
@@ -90,7 +122,8 @@ module LR
     ls.map { |sexp| compile_sexp(sexp) }.join("\n")
   end
 
-  def LR.special_form?
+  def LR.special_form? sym
+    SPECIAL_FORMS.has_key? sym.as(Symbol)
   end
 
   def LR.compile_lambda_list(ls)
@@ -119,7 +152,11 @@ module LR
   end
 
   def LR.compile_def(name, lambda_list, *body)
-    "def " + name.to_s + ' ' + LR.compile_lambda_list(lambda_list) + "; " + body.map(&method(:compile_sexp)).join('; ') + " end\n"
+    if function_name? name
+      "def " + name.to_s + ' ' + LR.compile_lambda_list(lambda_list) + "; " + body.map(&method(:compile_sexp)).join('; ') + " end\n"
+    else
+      "define_method #{name.inspect} do |#{LR.compile_lambda_list(lambda_list)}| #{body.map(&method(:compile_sexp)).join('; ')} end\n"
+    end
   end
 
   def LR.compile_defmacro(name, lambda_list, *body)
@@ -128,92 +165,105 @@ module LR
       body.map(&method(:compile_sexp)).join("; ") + " }"
   end
 
+  SPECIAL_FORMS = {
+    quote: lambda { |obj| obj.inspect },
+    private_function: lambda { |obj| "method(#{sexp[1].inspect})" },
+    setq: lambda { |var, val| "#{var} = #{compile_sexp(val)}" },
+    :"if" => lambda { |condition, thenclause, elseclause|
+      "if #{compile_sexp(condition)} then #{compile_sexp(thenclause)}" +
+      if elseclause
+      then " else #{compile_sexp(elseclause)} end"
+      else " end" end },
+    progn: lambda { |*body|
+      '(' + body.map(&method(:compile_sexp)).join('; ') + ')' },
+    :"lambda" => lambda { |lambda_list, *rest|
+      args = compile_lambda_list(lambda_list) 
+      "lambda { |#{args}| #{rest.map{|x| compile_sexp(x)}.join('; ')} }" },
+    :def => method(:compile_def),
+    defmacro: method(:compile_defmacro),
+    :"while" => lambda { |condition, *body|
+      body = body.map(&method(:compile_sexp)).join("; ")
+      "while #{condition} do #{body} end" },
+    :"return" => lambda { |value|
+      if b
+        "return #{ compile_sexp(value) }"
+      else
+        "return"
+      end },
+    :"break" => lambda { |value|
+      if value
+        "break #{ compile_sexp(value) }"
+      else
+        "break"
+      end },
+  }
+
+  def LR.function_name?(symbol)
+    (symbol.as(Symbol).to_s =~ /\A[A-Za-z_]+[!?]?\z/) ? true : false
+  end
+
+  def LR.compile_funcall(sexp)
+    # この段階で sexp は [:msg, :receiver, :arg1, :arg2, ...] のよ
+    # うになっている。
+    #
+    # 直後の引数がブロック引数であって、通常と異なる経路で渡さなけ
+    # ればならないことを指示する & シンボルがあれば、そのようにする。
+    if sexp[0].to_s =~ /^\./ # レシーバー省略の呼び出し
+      if sexp.include?(:&)
+        raise "too many &'s" if sexp.count(:&) > 1
+        raise "& found but not argument" if sexp.index(:&) == sexp.size-1
+        posamp = sexp.index(:&)
+        func = sexp[posamp+1]
+        sexp = sexp.remove_at(posamp, posamp+1)
+        msg, *args = sexp
+
+        msg = msg.undot
+        if function_name?(msg)
+          msg.to_s + arglist(args.map(&method(:compile_sexp)) +
+                                           ["&"+compile_sexp(func)])
+        else
+          "self.send" + arglist([msg.inspect] + args.map(&method(:compile_sexp)) +
+                                ["&"+compile_sexp(func)])
+        end
+      else
+        msg, *args = sexp
+
+        msg = msg.undot
+        if function_name?(msg)
+          msg.to_s + arglist(args.map(&method(:compile_sexp)))
+        else
+          "self.send" + arglist([ msg.inspect] + args.map(&method(:compile_sexp)))
+        end
+      end
+    else
+      # メソッドコール
+      if sexp.include?(:&)
+        raise "too many &'s" if sexp.count(:&) > 1
+        raise "& found but not argument" if sexp.index(:&) == sexp.size-1
+        posamp = sexp.index(:&)
+        func = sexp[posamp+1]
+        sexp = sexp.remove_at(posamp, posamp+1)
+        msg, this, *args = sexp
+        compile_sexp(this) + ".send" +
+          arglist([msg.inspect, *args.map(&method(:compile_sexp)), ["&"+compile_sexp(func)]])
+      else
+        msg, this, *args = sexp
+
+        compile_sexp(this) + ".send" + 
+          arglist([msg.inspect, *args.map(&method(:compile_sexp))])
+      end
+    end
+  end
+
   # sexp がリストなら関数呼出。
   # (map (quote ("abc" "def")) & (lambda (x) (upcase x)))
   # この関数はディスパッチだけするほうがいい。
   def LR.compile_sexp(sexp)
-    if sexp.is_a? Array
-      if sexp[0] == :quote
-        sexp[1].inspect
-      elsif sexp[0] == :private_function
-        "method(#{sexp[1].inspect})"
-      elsif sexp[0] == :setq 
-        var = compile_sexp(sexp[1])
-        val = compile_sexp(sexp[2])
-        "#{var} = #{val}"
-      elsif sexp[0] == :"if"
-        condition = sexp[1]
-        thenclause = sexp[2]
-        elseclause = sexp[3]
-        "if #{compile_sexp(condition)} then #{compile_sexp(thenclause)}" +
-          if elseclause
-          then " else #{compile_sexp(elseclause)} end"
-          else " end" end
-      elsif sexp[0] == :progn
-        '(' + sexp[1..-1].map(&method(:compile_sexp)).join('; ') + ')'
-      elsif sexp[0] == :lambda
-        lmd, lambda_list, *rest = sexp
-        args = compile_lambda_list(lambda_list)
-        "lambda { |#{args}| #{rest.map{|x| compile_sexp(x)}.join('; ')} } "
-      elsif sexp[0] == :def
-        compile_def(*sexp[1..-1])
-      elsif sexp[0] == :defmacro
-        compile_defmacro(*sexp[1..-1])
-      elsif sexp[0] == :"while"
-        condition = compile_sexp(sexp[1])
-        body = sexp[2..-1].map(&LR.method(:compile_sexp)).join("; ")
-        "while #{condition} do #{body} end"
-      elsif sexp[0] == :"return"
-        _, value = sexp
-        if b
-          "return #{ compile_sexp(value) }"
-        else
-          "return"
-        end
-      elsif sexp[0] == :"break"
-        _, value = sexp
-        if value
-          "break #{ compile_sexp(value) }"
-        else
-          "break"
-        end
+    if sexp.list?
+      if SPECIAL_FORMS[sexp.first]
+        SPECIAL_FORMS[sexp.first].call(*sexp.rest)
       else
-        # この段階で sexp は [:msg, :receiver, :arg1, :arg2, ...] のよ
-        # うになっている。
-        #
-        # 直後の引数がブロック引数であって、通常と異なる経路で渡さなけ
-        # ればならないことを指示する & シンボルがあれば、そのようにする。
-        if sexp[0].to_s =~ /^\./
-          if sexp.include?(:&)
-            raise "too many &'s" if sexp.count(:&) > 1
-            raise "& found but not argument" if sexp.index(:&) == sexp.size-1
-            posamp = sexp.index(:&)
-            func = sexp[posamp+1]
-            sexp = sexp.values_at(*(0..sexp.size-1).to_a - [posamp, posamp+1])
-            msg, *args = sexp
-            msg.to_s.sub(/^\./,'') + arglist(args.map(&method(:compile_sexp)) + ["&"+compile_sexp(func)])
-          else
-            msg, *args = sexp
-
-            msg.to_s.sub(/^\./,'') + arglist(args.map(&method(:compile_sexp)))
-          end
-        else
-          if sexp.include?(:&)
-            raise "too many &'s" if sexp.count(:&) > 1
-            raise "& found but not argument" if sexp.index(:&) == sexp.size-1
-            posamp = sexp.index(:&)
-            func = sexp[posamp+1]
-            sexp = sexp.values_at(*(0..sexp.size-1).to_a - [posamp, posamp+1])
-            msg, this, *args = sexp
-            compile_sexp(this) + "." + msg.to_s +
-              arglist(args.map(&method(:compile_sexp)) + ["&"+compile_sexp(func)])
-          else
-            msg, this, *args = sexp
-
-            compile_sexp(this) + "." + msg.to_s +
-              arglist(args.map(&method(:compile_sexp)))
-          end
-        end
+        compile_funcall(sexp)
       end
     else
       case sexp
@@ -265,19 +315,34 @@ module LR
   ORDINARY_CHARS = ((32..126).map(&:chr) -
                     [" ", ?#, ?(, ?), ?', ?", ?;, ?/] -
                     # ['.'] -
-                    [*'0'..'9']).join
+                    # [*'0'..'9']
+                    []).join
 
   class PrematureEndException < StandardError
+    attr_reader :rest
+
+    def initialize(msg, rest)
+      super(msg)
+      @rest = rest
+    end
   end
+
   class NullInputException < StandardError
   end
 
-  # String -> [Object, String]
   def LR.read input
+    # puts "read: #{input[0..10].inspect} goes in"
+    LR._read(input).tap { |out|
+      # puts "read: #{out.inspect} goes out"
+    }
+  end
+
+  # String -> [Object, String]
+  def LR._read input
     # 動いてるけど読めなさすぎる
     unless MACRO_CHARS.empty?
       if input =~ /\A([#{Regexp.escape(MACRO_CHARS.keys.join)}])/
-        if MACRO_CHARS[$1].is_a? Proc
+        if MACRO_CHARS[$1].respond_to? :call
           return MACRO_CHARS[$1].call($', $1)
         elsif MACRO_CHARS[$1].is_a? Hash
           ftable = MACRO_CHARS[$1]
@@ -310,13 +375,13 @@ module LR
       rescue CloseParenException => e
         return [result, e.rest]
       rescue NullInputException => e
-        raise PrematureEndException, "expecting )"
+        raise PrematureEndException.new("expecting )", str)
       end
       raise 'unreachable'
     when /\A[#{Regexp.escape ORDINARY_CHARS}]+/
       [$&.to_sym, $']
-    when /\A\d+/
-      [$&.to_i, $']
+    # when /\A\d+/
+    #   [$&.to_i, $']
     when /\A"/
       rest = $'
       if ( match = rest.match(/\A[^"]*"/) ) != nil
