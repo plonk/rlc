@@ -460,10 +460,12 @@ module LR
 
   MACRO_CHARS['#'] = {}
 
+  # コメント記法
   set_macro_character(';', lambda { |input, char|
                         read(input.sub(/.*$/, ''))
                       })
 
+  # 正規表現リテラル
   set_macro_character('/', lambda { |input, char|
                         input = input.dup
                         buf = ""
@@ -479,12 +481,14 @@ module LR
                         [Regexp.new(buf), input]
                       })
 
+  # インスタンスメソッド記法
   set_macro_character('.', lambda { |input, char|
                         msg, rest = read(input)
                         exp = [:meth, msg]
                         [exp, rest]
                       })
 
+  # ブロック引数記法
   set_dispatch_macro_character('#', '&',
                                lambda { |input, char1, char2|
                                  sexp, rest = read(input)
@@ -492,6 +496,7 @@ module LR
                                   [:barg, [:function, sexp]], rest]
                                })
 
+  # S-exp コメント
   set_dispatch_macro_character('#', '/',
                                lambda { |input, char1, char2|
                                  sexp, rest = read(input)
