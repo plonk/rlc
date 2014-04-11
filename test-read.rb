@@ -44,5 +44,10 @@ describe LR, 'compile_funcall' do
     result = LR.compile_funcall([:map, [:".list", 1,2,3], :&, [:lambda, [:x], :x]])
     result.should eq('list(1, 2, 3).map(&lambda { |x| x })')
   end
+
+  it 'baz' do
+    result = LR.compile_argument_list([1])
+    result.should eq('(1)')
+  end
 end
 

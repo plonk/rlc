@@ -78,10 +78,12 @@ module LR
 
     load_history
     env = TOPLEVEL_BINDING
-    LR.load_builtin
+    LR.load_builtin unless options[:no_init_file]
     while line = Readline.readline("> ", true)
       begin
         p lisp_eval(line + "\n", env)
+      rescue NullInputException => e
+        next
       rescue PrematureEndException => e
         cont = Readline.readline("#{e.message}> ", true)
         if cont
@@ -174,12 +176,20 @@ module LR
   SPECIAL_FORMS = {
     quote: lambda { |obj| obj.inspect },
 
-    private_function: lambda { |obj|
-      if obj.list?
+    barg: lambda { |sexp|
+      "&#{compile_sexp sexp}" },
+
+    function: lambda { |obj|
+      if obj.list? and obj[0].any_of?(:lambda, :proc, :meth)
         compile_sexp(obj)
-      else
+      elsif obj.symbol?
         "method(#{obj.inspect})"
+      else
+        raise "#{obj.inspect} is not a function name"
       end },
+
+    meth: lambda { |sym|
+      "#{sym.inspect}.to_proc" },
 
     setq: lambda { |var, val| "#{var} = #{compile_sexp(val)}" },
     :"if" => lambda { |condition, thenclause, elseclause|
@@ -226,35 +236,49 @@ module LR
     (symbol.as(Symbol).to_s =~ /\A[A-Za-z_]+[!?]?\z/) ? true : false
   end
 
+  def LR.compile_methodcall(msg, this, args)
+    "#{compile_sexp(this)}.#{msg.to_s}#{args}"
+  end
+
+  def LR.compile_argument_list ls
+    ls.map { |arg|
+      if arg.list? and arg[0] == :barg
+        "&"+compile_sexp(arg[1])
+      else
+        compile_sexp(arg)
+      end
+    }.join(", ").apply { |inner| "(" + inner + ")" }
+  end
+
   def LR.compile_funcall(sexp)
-    # この段階で sexp は [:msg, :receiver, :arg1, :arg2, ...] のよ
+    # この段階で sexp は [:fn, :receiver, :arg1, :arg2, ...] のよ
     # うになっている。
     #
     # 直後の引数がブロック引数であって、通常と異なる経路で渡さなけ
     # ればならないことを指示する & シンボルがあれば、そのようにする。
-    msg, *args = sexp
-    block = []
-    if sexp.include?(:&)
-      raise "too many &'s" if sexp.count(:&) > 1
-      raise "& found but not argument" if sexp.index(:&) == sexp.size-1
-      posamp = sexp.index(:&)
-      func = sexp[posamp+1]
-      sexp = sexp.remove_at(posamp, posamp+1)
-      msg, *args = sexp
-      block = ["&"+compile_sexp(func)]
-    end
+    fn, *args = sexp
 
-    if msg.list? and msg[0] == :lambda
-      lam = compile_sexp msg
-      lam + ".call" + arglist(args.map(&method(:compile_sexp)) + block)
-    elsif msg.is_a? Symbol
-      if function_name?(msg)
-        msg.to_s + arglist(args.map(&method(:compile_sexp)) + block)
+    if fn.list? and fn[0].any_of?(:lambda, :proc, :meth)
+      case fn[0]
+      when :lambda
+        lam = compile_sexp fn
+        lam + ".call" + compile_argument_list(args)
+      when :proc
+        lam = compile_sexp fn
+        lam + ".call" + compile_argument_list(args)
+      when :meth
+        receiver, *args = args
+        arglist = compile_argument_list(args)
+        compile_methodcall(fn[1], receiver, arglist)
+      end
+    elsif fn.is_a? Symbol
+      if function_name?(fn)
+        fn.to_s + compile_argument_list(args)
       else
-        "self.send" + arglist([msg.inspect] + args.map(&method(:compile_sexp)) + block)
+        "self.send" + compile_argument_list([fn.inspect] + args)
       end
     else
-      raise "#{msg} is not a function name"
+      raise "#{fn} is not a function name"
     end
   end
 
@@ -419,11 +443,19 @@ module LR
   end
 
   def LR.verbose
-    @verbose
+    @options[:verbose]
   end
 
   def LR.verbose=(val)
-    @verbose=val
+    @options[:verbose]=val
+  end
+
+  def LR.options
+    @options
+  end
+
+  def LR.options= hash
+    @options = hash.as({Symbol=>Object})
   end
 
   MACRO_CHARS['#'] = {}
@@ -449,10 +481,22 @@ module LR
 
   set_macro_character('.', lambda { |input, char|
                         msg, rest = read(input)
-                        exp = [:lambda,[:receiver, :"&rest",:args, :"&blk"],
-                               [:message_apply, :receiver, [:quote, msg], :args, :&, :blk]]
+                        exp = [:meth, msg]
                         [exp, rest]
                       })
+
+  set_dispatch_macro_character('#', '&',
+                               lambda { |input, char1, char2|
+                                 sexp, rest = read(input)
+                                 [
+                                  [:barg, [:function, sexp]], rest]
+                               })
+
+  set_dispatch_macro_character('#', '/',
+                               lambda { |input, char1, char2|
+                                 sexp, rest = read(input)
+                                 read(rest)
+                               })
 
 end  
 
