@@ -38,11 +38,17 @@ module LR
           raise
         end
       end
-      # puts "read:"
-      # p sexp
+      if verbose
+        puts "read:"
+        p sexp
+      end
       ruby_code = compile_sexp macroexpand sexp
-      # puts "ruby:"
-      # puts ruby_code
+      if verbose
+        puts
+        puts "ruby:"
+        puts ruby_code
+      end
+      puts
       values << eval(ruby_code, env)
     end
     values.last
@@ -167,29 +173,47 @@ module LR
 
   SPECIAL_FORMS = {
     quote: lambda { |obj| obj.inspect },
-    private_function: lambda { |obj| "method(#{sexp[1].inspect})" },
+
+    private_function: lambda { |obj|
+      if obj.list?
+        compile_sexp(obj)
+      else
+        "method(#{obj.inspect})"
+      end },
+
     setq: lambda { |var, val| "#{var} = #{compile_sexp(val)}" },
     :"if" => lambda { |condition, thenclause, elseclause|
       "if #{compile_sexp(condition)} then #{compile_sexp(thenclause)}" +
       if elseclause
       then " else #{compile_sexp(elseclause)} end"
       else " end" end },
+
     progn: lambda { |*body|
       '(' + body.map(&method(:compile_sexp)).join('; ') + ')' },
+
     :"lambda" => lambda { |lambda_list, *rest|
       args = compile_lambda_list(lambda_list) 
       "lambda { |#{args}| #{rest.map{|x| compile_sexp(x)}.join('; ')} }" },
+
+    :"proc" => lambda { |lambda_list, *rest|
+      args = compile_lambda_list(lambda_list) 
+      "proc { |#{args}| #{rest.map{|x| compile_sexp(x)}.join('; ')} }" },
+
     :def => method(:compile_def),
+
     defmacro: method(:compile_defmacro),
+
     :"while" => lambda { |condition, *body|
       body = body.map(&method(:compile_sexp)).join("; ")
       "while #{condition} do #{body} end" },
+
     :"return" => lambda { |value|
       if b
         "return #{ compile_sexp(value) }"
       else
         "return"
       end },
+
     :"break" => lambda { |value|
       if value
         "break #{ compile_sexp(value) }"
@@ -208,50 +232,29 @@ module LR
     #
     # 直後の引数がブロック引数であって、通常と異なる経路で渡さなけ
     # ればならないことを指示する & シンボルがあれば、そのようにする。
-    if sexp[0].to_s =~ /^\./ # レシーバー省略の呼び出し
-      if sexp.include?(:&)
-        raise "too many &'s" if sexp.count(:&) > 1
-        raise "& found but not argument" if sexp.index(:&) == sexp.size-1
-        posamp = sexp.index(:&)
-        func = sexp[posamp+1]
-        sexp = sexp.remove_at(posamp, posamp+1)
-        msg, *args = sexp
+    msg, *args = sexp
+    block = []
+    if sexp.include?(:&)
+      raise "too many &'s" if sexp.count(:&) > 1
+      raise "& found but not argument" if sexp.index(:&) == sexp.size-1
+      posamp = sexp.index(:&)
+      func = sexp[posamp+1]
+      sexp = sexp.remove_at(posamp, posamp+1)
+      msg, *args = sexp
+      block = ["&"+compile_sexp(func)]
+    end
 
-        msg = msg.undot
-        if function_name?(msg)
-          msg.to_s + arglist(args.map(&method(:compile_sexp)) +
-                                           ["&"+compile_sexp(func)])
-        else
-          "self.send" + arglist([msg.inspect] + args.map(&method(:compile_sexp)) +
-                                ["&"+compile_sexp(func)])
-        end
+    if msg.list? and msg[0] == :lambda
+      lam = compile_sexp msg
+      lam + ".call" + arglist(args.map(&method(:compile_sexp)) + block)
+    elsif msg.is_a? Symbol
+      if function_name?(msg)
+        msg.to_s + arglist(args.map(&method(:compile_sexp)) + block)
       else
-        msg, *args = sexp
-
-        msg = msg.undot
-        if function_name?(msg)
-          msg.to_s + arglist(args.map(&method(:compile_sexp)))
-        else
-          "self.send" + arglist([ msg.inspect] + args.map(&method(:compile_sexp)))
-        end
+        "self.send" + arglist([msg.inspect] + args.map(&method(:compile_sexp)) + block)
       end
     else
-      # メソッドコール
-      if sexp.include?(:&)
-        raise "too many &'s" if sexp.count(:&) > 1
-        raise "& found but not argument" if sexp.index(:&) == sexp.size-1
-        posamp = sexp.index(:&)
-        func = sexp[posamp+1]
-        sexp = sexp.remove_at(posamp, posamp+1)
-        msg, this, *args = sexp
-        compile_sexp(this) + ".send" +
-          arglist([msg.inspect, *args.map(&method(:compile_sexp)), ["&"+compile_sexp(func)]])
-      else
-        msg, this, *args = sexp
-
-        compile_sexp(this) + ".send" + 
-          arglist([msg.inspect, *args.map(&method(:compile_sexp))])
-      end
+      raise "#{msg} is not a function name"
     end
   end
 
@@ -260,7 +263,7 @@ module LR
   # この関数はディスパッチだけするほうがいい。
   def LR.compile_sexp(sexp)
     if sexp.list?
-      if SPECIAL_FORMS[sexp.first]
+      if SPECIAL_FORMS.has_key? sexp.first
         SPECIAL_FORMS[sexp.first].call(*sexp.rest)
       else
         compile_funcall(sexp)
@@ -378,10 +381,10 @@ module LR
         raise PrematureEndException.new("expecting )", str)
       end
       raise 'unreachable'
+    when /\A\d+/
+      [$&.to_i, $']
     when /\A[#{Regexp.escape ORDINARY_CHARS}]+/
       [$&.to_sym, $']
-    # when /\A\d+/
-    #   [$&.to_i, $']
     when /\A"/
       rest = $'
       if ( match = rest.match(/\A[^"]*"/) ) != nil
@@ -415,6 +418,14 @@ module LR
     MACRO_CHARS[char1][char2] = fn
   end
 
+  def LR.verbose
+    @verbose
+  end
+
+  def LR.verbose=(val)
+    @verbose=val
+  end
+
   MACRO_CHARS['#'] = {}
 
   set_macro_character(';', lambda { |input, char|
@@ -436,5 +447,20 @@ module LR
                         [Regexp.new(buf), input]
                       })
 
+  set_macro_character('.', lambda { |input, char|
+                        msg, rest = read(input)
+                        exp = [:lambda,[:receiver, :"&rest",:args, :"&blk"],
+                               [:message_apply, :receiver, [:quote, msg], :args, :&, :blk]]
+                        [exp, rest]
+                      })
+
 end  
-  
+
+def message_apply(receiver, msg, args, &blk)
+  # p [:message_apply, receiver, msg, args, blk]
+  receiver.send(msg, *args, &blk)
+end
+
+# def block(&blk)
+#   blk
+# end
