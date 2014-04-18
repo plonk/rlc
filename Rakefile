@@ -10,6 +10,10 @@ file 'rlci' => SRC do |task|
   sh "cat builtin.lisp >> rlci"
 end
 
+task :test do
+  sh "rspec test-read.rb"
+end
+
 task :clean do
   sh "rm -f rlci"
 end
