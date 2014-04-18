@@ -1,16 +1,15 @@
-# ruby lisp compiler
+# ruby to lisp compiler
 
 require_relative 'read.rb'
 
-str = RubyLisp.builtin_stuff
+str = File.read LR::BUILTIN_STUFF
 until str =~ /\A\s*\z/
-  sexp, str = RubyLisp.read str 
-  puts RubyLisp.compile_sexp(sexp)
+  sexp, str = LR.read str 
+  puts LR.compile_sexp(sexp)
 end
 
 str = File.read(ARGV[0])
 until str =~ /\A\s*\z/
-  sexp, str = RubyLisp.read(str)
-  puts RubyLisp.compile_sexp(sexp)
+  sexp, str = LR.read(str)
+  puts LR.compile_sexp(sexp)
 end
-  

@@ -6,9 +6,6 @@
   (.inject args 1 '*))
 (def - (a &rest args)
   (.inject args a '-))
-;; (def / (a &rest args)
-;;   (.inject args a '/))
-
 (def % (a b)
   (.% a b))
 
@@ -16,12 +13,12 @@
   (if (= i 20)
       nil
       (progn
-        (setq p [(= (% i 3) 0) (= (% i 5) 0)])
+        (setq p (list (= (% i 3) 0) (= (% i 5) 0)))
         (cond
-          ((= p [true true]) (puts "fizzbuzz"))
-          ((= p [true false]) (puts "fizz"))
-          ((= p [false true]) (puts "buzz"))
-          ((= p [false false]) (puts i)))
+          ((= p (list true true)) (puts "fizzbuzz"))
+          ((= p (list true false)) (puts "fizz"))
+          ((= p (list false true)) (puts "buzz"))
+          ((= p (list false false)) (puts i)))
         (fizz (+ i 1)))))
 
 (fizz 1)

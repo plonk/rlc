@@ -3,11 +3,16 @@ require_relative 'util.rb'
 require_relative 'extension.rb'
 
 $MACROS = {}
+VERSION = "0.0.1"
 
 module LR
   MACRO_CHARS = {}
 
-  BUILTIN_STUFF = File.dirname(__FILE__) + "/builtin.lisp"
+  if defined? DATA
+    BUILTIN_STUFF = DATA
+  else
+    BUILTIN_STUFF = File.dirname(__FILE__) + "/builtin.lisp"
+  end
 
   def LR.read_body(str)
     values = []
@@ -47,8 +52,8 @@ module LR
         puts
         puts "ruby:"
         puts ruby_code
+        puts
       end
-      puts
       values << eval(ruby_code, env)
     end
     values.last
@@ -64,7 +69,7 @@ module LR
   end
 
   def LR.load_builtin
-    str = File.read( BUILTIN_STUFF ).strip
+    str = BUILTIN_STUFF.read.strip
     while str.nonempty?
       sexp, str = LR.read(str)
       sexp = macroexpand sexp
@@ -72,8 +77,16 @@ module LR
     end
   end
 
+  def LR.script(text)
+    env = TOPLEVEL_BINDING
+    LR.load_builtin unless options[:no_init_file]
+    lisp_eval(text, env)
+  end
+
   # Read Eval Print Loop
   def LR.repl()
+    puts "RLCi version #{VERSION}"
+
     require 'readline'
 
     load_history
@@ -102,7 +115,7 @@ module LR
     save_history
   end
 
-  HISTORY_FILE = ENV['HOME'] + "/.lor_history"
+  HISTORY_FILE = ENV['HOME'] + "/.rlci_history"
   HISTORY_LINES = 3000
 
   def LR.load_history
@@ -275,7 +288,7 @@ module LR
       if function_name?(fn)
         fn.to_s + compile_argument_list(args)
       else
-        "self.send" + compile_argument_list([fn.inspect] + args)
+        "self.send" + compile_argument_list([[:quote, fn]] + args)
       end
     else
       raise "#{fn} is not a function name"
