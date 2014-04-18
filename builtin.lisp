@@ -20,13 +20,13 @@
 (.set_dispatch_macro_character LR #\# #\'
                               (lambda (input char_a char_b)
                                 (setq res (.read LR input))
-                                (list (list 'private_function (.first res)) (.last res))))
+                                (list (list 'function (.first res)) (.last res))))
 
 ; (defmacro function (name) (list '.to_proc (list 'quote name)))
 
 (defmacro let (varlist &rest body)
-  (list '.apply (.+ '(list) (.map varlist & #'.last))
-         '& (.+ (list 'lambda (list (.map varlist & #'.first))) body)))
+  (list '.apply (.+ '(list) (.map varlist #&.last))
+         '#& (.+ (list 'lambda (list (.map varlist #&.first))) body)))
 
 ;; (let ((counter 0))
 ;;   (define_method 'gensym &(lambda ()
@@ -69,3 +69,8 @@
   (.inject args 1 '*))
 (def - (a &rest args)
   (.inject args a '-))
+
+(defmacro assert (sexp)
+  (list 'if sexp
+         'nil
+         (list 'puts (.+ "FAIL " (.inspect sexp)))))
